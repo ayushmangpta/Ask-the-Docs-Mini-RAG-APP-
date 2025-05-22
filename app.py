@@ -49,17 +49,48 @@ def cleanup_session(session_id):
 # Register cleanup function to run on exit
 atexit.register(lambda: cleanup_old_sessions())
 
-if "GOOGLE_API_KEY" not in os.environ:
-    os.environ["GOOGLE_API_KEY"] = getpass.getpass("Enter your Google AI API key: ")
+# Function to validate Google API key
+def validate_api_key(api_key):
+    """Validate a Google API key by making a test request"""
+    try:
+        # Create a temporary LLM instance with the key to test
+        test_llm = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            temperature=0.1,
+            max_tokens=10,  # Minimal tokens for quick validation
+            google_api_key=api_key,
+        )
+        
+        # Try a simple test message to validate the API key
+        test_message = [HumanMessage(content="Test")]
+        _ = test_llm.invoke(test_message)  # We only care if this succeeds
+        return True, "API key is valid"
+    except Exception as e:
+        error_msg = str(e)
+        # Check for common auth-related errors in the exception message
+        if "auth" in error_msg.lower() or "api key" in error_msg.lower() or "apikey" in error_msg.lower() or "credential" in error_msg.lower() or "permission" in error_msg.lower():
+            return False, "Invalid API key - Authentication failed"
+        else:
+            return False, f"API connection error: {error_msg}"
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
-    temperature=0.1,
-    max_tokens=None,
-    timeout=None,
-    top_p=0.95,
-    max_retries=2,
-)
+# Function to initialize LLM models with session-specific API key
+def initialize_llm(api_key=None, streaming=False):
+    # Use provided API key or fall back to environment variable
+    api_key = api_key or os.environ.get("GOOGLE_API_KEY")
+    
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.0-flash",
+        temperature=0.1,
+        max_tokens=None if not streaming else None,
+        timeout=None if not streaming else None,
+        top_p=0.95 if not streaming else None,
+        max_retries=2 if not streaming else 1,
+        streaming=streaming,
+        google_api_key=api_key,
+    )
+
+# Get default API key from environment
+default_api_key = os.environ.get("GOOGLE_API_KEY")
 
 st.set_page_config(
     page_title="Ask the Docs",
@@ -78,9 +109,18 @@ if "session_id" not in st.session_state:
     
     # Session-specific FAISS index directory
     st.session_state.faiss_index_dir = os.path.join(st.session_state.user_dir, "faiss_index")
+    
+    # Initialize session API key
+    st.session_state.api_key = default_api_key
+    st.session_state.api_key_set = default_api_key is not None
 
 # Clean up old sessions periodically (every time a new session starts)
 cleanup_old_sessions()
+
+# Initialize LLM models with session API key
+if "llm" not in st.session_state or "llm_stream" not in st.session_state:
+    st.session_state.llm = initialize_llm(st.session_state.api_key)
+    st.session_state.llm_stream = initialize_llm(st.session_state.api_key, streaming=True)
 
 if "rag_sources" not in st.session_state:
     st.session_state.rag_sources = []
@@ -113,10 +153,6 @@ with st.sidebar:
     with tab1:
         st.markdown("### API Settings")
         
-        # Initialize key status in session state if not present
-        if "api_key_set" not in st.session_state:
-            st.session_state.api_key_set = os.getenv("GOOGLE_API_KEY") is not None
-        
         # Show API key status instead of the actual key
         st.write("API Key Status: " + ("✅ Set" if st.session_state.api_key_set else "❌ Not Set"))
         
@@ -131,9 +167,22 @@ with st.sidebar:
             
             # Only update the API key if a new one is provided
             if new_api_key:
-                os.environ["GOOGLE_API_KEY"] = new_api_key
-                st.session_state.api_key_set = True
-                st.success("API key updated successfully!")
+                with st.spinner("Validating API key..."):
+                    is_valid, message = validate_api_key(new_api_key)
+                    
+                    if is_valid:
+                        # Store API key in session state instead of environment variable
+                        st.session_state.api_key = new_api_key
+                        st.session_state.api_key_set = True
+                        
+                        # Re-initialize LLM instances with the new API key
+                        st.session_state.llm = initialize_llm(st.session_state.api_key)
+                        st.session_state.llm_stream = initialize_llm(st.session_state.api_key, streaming=True)
+                        
+                        st.success("API key updated successfully!")
+                    else:
+                        st.error(message)
+                        st.session_state.api_key_set = False
     
     with tab2:
         # Add RAG toggle switch
@@ -242,7 +291,7 @@ if prompt := st.chat_input("Ask a question about your documents"):
         if st.session_state.use_rag and 'retriever' in st.session_state:
             try:
                 with st.spinner("Searching documents for relevant information..."):
-                    rag_response = answer_with_rag(prompt, st.session_state.retriever, llm)
+                    rag_response = answer_with_rag(prompt, st.session_state.retriever, st.session_state.llm)
                     
                     # Format the message with the RAG response
                     rag_prompt = f"""
@@ -254,8 +303,8 @@ if prompt := st.chat_input("Ask a question about your documents"):
                     """
                     messages = [HumanMessage(content=rag_prompt)]
                     
-                    # Improved streaming to prevent duplicated words
-                    for chunk in llm_stream.stream(messages):
+                    # Use session-specific streaming LLM
+                    for chunk in st.session_state.llm_stream.stream(messages):
                         if hasattr(chunk, 'content'):
                             content = chunk.content
                             full_response += content
@@ -266,8 +315,8 @@ if prompt := st.chat_input("Ask a question about your documents"):
                 recent_messages = st.session_state.messages[-2:]
                 messages = [HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"]) for m in recent_messages]
                 
-                # Improved streaming implementation
-                for chunk in llm_stream.stream(messages):
+                # Use session-specific streaming LLM
+                for chunk in st.session_state.llm_stream.stream(messages):
                     if hasattr(chunk, 'content'):
                         content = chunk.content
                         full_response += content
@@ -276,8 +325,8 @@ if prompt := st.chat_input("Ask a question about your documents"):
             recent_messages = st.session_state.messages[-2:]
             messages = [HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"]) for m in recent_messages]
 
-            # Improved streaming implementation
-            for chunk in llm_stream.stream(messages):
+            # Use session-specific streaming LLM
+            for chunk in st.session_state.llm_stream.stream(messages):
                 if hasattr(chunk, 'content'):
                     content = chunk.content
                     full_response += content
