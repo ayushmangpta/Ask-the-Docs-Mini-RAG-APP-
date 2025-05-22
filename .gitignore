@@ -4,3 +4,4 @@ __pycache__
 temp_user_data/
 **/faiss_index/
 faiss_index/
+.devcontainer/
