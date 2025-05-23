@@ -252,6 +252,42 @@ stream_llm_response(llm_stream, messages)
 - **Embeddings**: Google's `models/embedding-001`
 - **Session Management**: UUID-based isolation with automatic cleanup
 - **File Storage**: Session-specific temporary directories
+  
+## 🚀 Deployment (Docker + AWS EC2)
+
+This project is deployed using Docker and AWS EC2 (Free Tier). Below is the complete deployment workflow.
+
+### 1. Build Docker Image Locally
+
+Make sure your `.env` file (containing sensitive keys like `GOOGLE_API_KEY`) is excluded from the Docker image.
+
+```bash
+docker build -t askthedocs .
+```
+### 2. Environment Variables
+A .env file is used to securely pass API keys and configuration parameters at runtime.
+
+### 3. Image Export & Transfer
+The Docker image is saved locally as a .tar file and transferred to the EC2 instance using scp.
+
+### 4. EC2 Setup
+A t3.micro EC2 instance (Amazon Linux 2023) is launched with the necessary security group rule to allow traffic on port 8501 (Streamlit default).
+
+### 5. Container Execution
+On the EC2 instance, the image is loaded and run using:
+```bash
+docker load -i askthedocs.tar
+docker run -d -p 8501:8501 --env-file /home/ec2-user/.env askthedocs
+```
+
+### 6. Accessing the App
+The app is available at:
+```url
+http://<your-ec2-public-ip>:8501
+```
+
+### 7. Security
+SSH key permissions were adjusted to meet EC2's strict requirements, and environment variables are not hardcoded.
 
 ## 📈 Use Cases
 
