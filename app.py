@@ -13,6 +13,9 @@ from rag_methods import stream_llm_response, load_documents, create_faiss_index,
 
 dotenv.load_dotenv()
 
+# Maximum number of messages before auto-clearing chat
+MAX_MESSAGES = 100
+
 # Create a base temp directory for all user sessions
 BASE_TEMP_DIR = os.path.join(os.getcwd(), "temp_user_data")
 os.makedirs(BASE_TEMP_DIR, exist_ok=True)
@@ -45,6 +48,19 @@ def cleanup_session(session_id):
             print(f"Cleaned up session: {session_id}")
         except Exception as e:
             print(f"Error cleaning up session {session_id}: {str(e)}")
+
+def check_message_limit():
+    """Check if message limit is reached and clear chat if necessary"""
+    if len(st.session_state.messages) >= MAX_MESSAGES:
+        # Keep only the initial assistant message
+        initial_message = st.session_state.messages[0] if st.session_state.messages else {
+            "role": "assistant",
+            "content": "Hello! I am your AI assistant. How can I help you today?",
+        }
+        st.session_state.messages = [initial_message]
+        st.warning(f"Chat automatically cleared after reaching {MAX_MESSAGES} messages limit.")
+        return True
+    return False
 
 # Register cleanup function to run on exit
 atexit.register(lambda: cleanup_old_sessions())
@@ -260,6 +276,9 @@ with st.sidebar:
             type="primary"
         )
 
+# Display message count and limit
+st.sidebar.markdown(f"**Messages:** {len(st.session_state.messages)}/{MAX_MESSAGES}")
+
 modelprovider = st.session_state.get("modelprovider", "Google")
 if modelprovider == "Google":
     llm_stream = ChatGoogleGenerativeAI(
@@ -334,3 +353,6 @@ if prompt := st.chat_input("Ask a question about your documents"):
         
         # After streaming completes, save the response to session state
         st.session_state.messages.append({"role": "assistant", "content": full_response})
+        
+        # Check if message limit is reached after adding the response
+        check_message_limit()
